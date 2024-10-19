@@ -355,7 +355,7 @@ EOF
         printf '%s\n' "Status: ${GREEN}ESR related preferences have been activated!${NC}"
     fi
     # apply overrides
-    if ! [ "$SKIPOVERRIDE" ]; then
+    if [ "$SKIPOVERRIDE" = false ]; then
         IFS=,
         for FILE in $OVERRIDE; do
             add_override "$FILE"
