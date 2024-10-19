@@ -11,11 +11,11 @@
 
 probe_permission() {
     if [ "$(id -u)" -eq 0 ]; then
-        printf "You shouldn't run this with elevated privileges (such as with doas/sudo).\n" >&2
+        echo "You shouldn't run this with elevated privileges (such as with doas/sudo)." >&2
         exit 1
     elif [ -n "$(find ./ -user 0)" ]; then
-        printf 'It looks like this script was previously run with elevated privileges,
-    you will need to change ownership of the following files to your user:\n' >&2
+        echo 'It looks like this script was previously run with elevated privileges.' >&2
+        echo 'You will need to change ownership of the following files to your user:' >&2
         find . -user 0
         exit 1
     fi
@@ -30,7 +30,7 @@ probe_downloader() {
     elif command -v wget >/dev/null; then
         DOWNLOAD_METHOD='wget --max-redirect 3 -qO'
     else
-        printf "No curl or wget detected.\nAutomatic self-update disabled!\n" >&2
+        printf '%s\n%s\n' 'No curl or wget detected.' 'Automatic self-update disabled!' >&2
         AUTOUPDATE=false
     fi
 }
@@ -107,7 +107,7 @@ probe_readlink() {
 
         preadlink() {
             if [ $# -le 0 ]; then
-                command printf 'preadlink: missing operand\n' >&2
+                echo 'preadlink: missing operand' >&2
             else
                 while [ $# -gt 0 ]; do
                     rreadlink "$1"
@@ -119,12 +119,12 @@ probe_readlink() {
 }
 
 download_file() { # expects URL as argument ($1)
-    readonly tf=$(mktemp)
-    $DOWNLOAD_METHOD "${tf}" "$1" >/dev/null 2>&1 && echo "$tf" || echo # return the temp-filename or empty string on error
+    tf=$(mktemp)
+    $DOWNLOAD_METHOD "${tf}" "$1" >/dev/null 2>&1 && printf '%s\n' "$tf"
 }
 
 get_script_version() {
-    echo "$(sed -n '5 s/.*[[:blank:]]\([[:digit:]]*\.[[:digit:]]*\)/\1/p' "$1")"
+    sed -n '5 s/.*[[:blank:]]\([[:digit:]]*\.[[:digit:]]*\)/\1/p' "$1"
 }
 
 ######################################
@@ -132,29 +132,40 @@ get_script_version() {
 ######################################
 
 usage() {
-    printf "\nUsage: $0 [-ds]\n"
-    printf "
+    cat <<EOF
+
+Usage: $0 [-ds]
+
 Optional Arguments:
     -s           Start immediately
-    -d           Don't auto-update prefsCleaner.sh\n"
+    -d           Don't auto-update prefsCleaner.sh
+EOF
 }
 
 show_banner() {
-    printf "\n\n\n"
-    echo "                   ╔══════════════════════════╗"
-    echo "                   ║     prefs.js cleaner     ║"
-    echo "                   ║    by claustromaniac     ║"
-    echo "                   ║           v2.2           ║"
-    echo "                   ╚══════════════════════════╝"
-    printf "\nThis script should be run from your Firefox profile directory.\n\n"
-    echo "It will remove any entries from prefs.js that also exist in user.js."
-    echo "This will allow inactive preferences to be reset to their default values."
-    printf "\nThis Firefox profile shouldn't be in use during the process.\n\n"
+    cat <<'EOF'
+
+
+
+                   ╔══════════════════════════╗
+                   ║     prefs.js cleaner     ║
+                   ║    by claustromaniac     ║
+                   ║           v2.2           ║
+                   ╚══════════════════════════╝
+
+This script should be run from your Firefox profile directory.
+
+It will remove any entries from prefs.js that also exist in user.js.
+This will allow inactive preferences to be reset to their default values.
+
+This Firefox profile shouldn't be in use during the process.
+
+EOF
 }
 
 update_script() {
-    readonly tmpfile="$(download_file 'https://raw.githubusercontent.com/arkenfox/user.js/master/prefsCleaner.sh')"
-    [ -z "$tmpfile" ] && printf "Error! Could not download prefsCleaner.sh\n" >&2 && return 1 # check if download failed
+    tmpfile=$(download_file 'https://raw.githubusercontent.com/arkenfox/user.js/master/prefsCleaner.sh')
+    [ -z "$tmpfile" ] && echo 'Error! Could not download prefsCleaner.sh' >&2 && return 1 # check if download failed
     [ "$(get_script_version "$SCRIPT_FILE")" = "$(get_script_version "$tmpfile")" ] && return 0
     mv "$tmpfile" "$SCRIPT_FILE"
     chmod u+x "$SCRIPT_FILE"
@@ -164,23 +175,23 @@ update_script() {
 
 start() {
     if [ ! -e user.js ]; then
-        printf '\nuser.js not found in the current directory.\n' >&2
+        printf '\n%s\n' 'user.js not found in the current directory.' >&2
         exit 1
     elif [ ! -e prefs.js ]; then
-        printf '\nprefs.js not found in the current directory.\n' >&2
+        printf '\n%s\n' 'prefs.js not found in the current directory.' >&2
         exit 1
     fi
     check_firefox_running
     mkdir -p prefsjs_backups
     bakfile="prefsjs_backups/prefs.js.backup.$(date +"%Y-%m-%d_%H%M")"
     mv prefs.js "${bakfile}" || {
-        printf '\n%s\n' "Operation aborted.\nReason: Could not create backup file $bakfile" >&2
+        printf '\n%s\n%s\n' 'Operation aborted.' "Reason: Could not create backup file $bakfile" >&2
         exit 1
     }
-    printf "\nprefs.js backed up: $bakfile\n"
-    echo "Cleaning prefs.js..."
+    printf '\n%s\n' "prefs.js backed up: $bakfile"
+    echo 'Cleaning prefs.js...'
     clean "$bakfile"
-    printf '\nAll done!\n'
+    printf '\n%s\n' 'All done!'
     exit 0
 }
 
@@ -188,16 +199,17 @@ check_firefox_running() {
     # there are many ways to see if firefox is running or not, some more reliable than others
     # this isn't elegant and might not be future-proof but should at least be compatible with any environment
     while [ -e lock ]; do
-        printf "\nThis Firefox profile seems to be in use. Close Firefox and try again.\n\n" >&2
-        printf "Press any key to continue." >&2
+        printf '\n%s\n\n' 'This Firefox profile seems to be in use. Close Firefox and try again.' >&2
+        printf 'Press any key to continue.' >&2
         read -r REPLY
     done
 }
 
+# FIXME: should also accept single quotes
 clean() {
     prefexp="user_pref[     ]*\([     ]*[\"']([^\"']+)[\"'][     ]*,"
     known_prefs=$(grep -E "$prefexp" user.js | awk -F'["]' '/user_pref/{ print "\"" $2 "\"" }' | sort | uniq)
-    unneeded_prefs=$(echo "$known_prefs" | grep -E -f - "$1" | grep -E -e "^$prefexp")
+    unneeded_prefs=$(printf '%s\n' "$known_prefs" | grep -E -f - "$1" | grep -E -e "^$prefexp")
     grep -v -f - "$1" >prefs.js <<EOF
 ${unneeded_prefs}
 EOF
@@ -213,7 +225,7 @@ probe_readlink
 SCRIPT_FILE=$(preadlink "$0") && [ -f SCRIPT_FILE ] || exit 1
 AUTOUPDATE=true
 QUICKSTART=false
-while getopts "sd" opt; do
+while getopts 'sd' opt; do
     case $opt in
         s)
             QUICKSTART=true
@@ -227,12 +239,12 @@ while getopts "sd" opt; do
     esac
 done
 ## change directory to the Firefox profile directory
-cd "$(dirname "${SCRIPT_FILE}")"
+cd "$(dirname "${SCRIPT_FILE}")" || exit 1
 probe_permission
 [ "$AUTOUPDATE" = true ] && update_script "$@"
 show_banner
 [ "$QUICKSTART" = true ] && start
-printf "\nIn order to proceed, select a command below by entering its corresponding number.\n\n"
+printf '\n%s\n\n' 'In order to proceed, select a command below by entering its corresponding number.'
 while :; do
     printf '1) Start
 2) Help
@@ -245,15 +257,20 @@ while :; do
                 ;;
             2)
                 usage
-                printf "\nThis script creates a backup of your prefs.js file before doing anything.\n"
-                printf "It should be safe, but you can follow these steps if something goes wrong:\n\n"
-                echo "1. Make sure Firefox is closed."
-                echo "2. Delete prefs.js in your profile folder."
-                echo "3. Delete Invalidprefs.js if you have one in the same folder."
-                echo "4. Rename or copy your latest backup to prefs.js."
-                echo "5. Run Firefox and see if you notice anything wrong with it."
-                echo "6. If you do notice something wrong, especially with your extensions, and/or with the UI, go to about:support, and restart Firefox with add-ons disabled. Then, restart it again normally, and see if the problems were solved."
-                printf "If you are able to identify the cause of your issues, please bring it up on the arkenfox user.js GitHub repository.\n\n"
+                cat <<'EOF'
+
+This script creates a backup of your prefs.js file before doing anything.
+It should be safe, but you can follow these steps if something goes wrong:
+
+1. Make sure Firefox is closed.
+2. Delete prefs.js in your profile folder.
+3. Delete Invalidprefs.js if you have one in the same folder.
+4. Rename or copy your latest backup to prefs.js.
+5. Run Firefox and see if you notice anything wrong with it.
+6. If you do notice something wrong, especially with your extensions, and/or with the UI, go to about:support, and restart Firefox with add-ons disabled. Then, restart it again normally, and see if the problems were solved.
+If you are able to identify the cause of your issues, please bring it up on the arkenfox user.js GitHub repository.
+
+EOF
                 ;;
             3)
                 exit 0
