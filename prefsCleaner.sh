@@ -4,6 +4,37 @@
 ## authors: @claustromaniac, @overdodactyl, @earthlng, @9ao9ai9ar
 ## version: 2.2
 
+###################################################
+#            Common utility functions             #
+# (shared between updater.sh and prefsCleaner.sh) #
+###################################################
+
+probe_permission() {
+    if [ "$(id -u)" -eq 0 ]; then
+        printf "You shouldn't run this with elevated privileges (such as with doas/sudo).\n" >&2
+        exit 1
+    elif [ -n "$(find ./ -user 0)" ]; then
+        printf 'It looks like this script was previously run with elevated privileges,
+    you will need to change ownership of the following files to your user:\n' >&2
+        find . -user 0
+        exit 1
+    fi
+}
+
+probe_downloader() {
+    DOWNLOAD_METHOD=''
+    if command -v curl >/dev/null; then
+        DOWNLOAD_METHOD='curl --max-redirs 3 -so'
+    elif command -v wget2 >/dev/null; then
+        DOWNLOAD_METHOD='wget2 --max-redirect 3 -qO'
+    elif command -v wget >/dev/null; then
+        DOWNLOAD_METHOD='wget --max-redirect 3 -qO'
+    else
+        printf "No curl or wget detected.\nAutomatic self-update disabled!\n" >&2
+        AUTOUPDATE=false
+    fi
+}
+
 probe_readlink() {
     if command realpath -- . 2>/dev/null; then
         preadlink() {
@@ -87,36 +118,18 @@ probe_readlink() {
     fi
 }
 
-probe_readlink
-SCRIPT_FILE=$(preadlink "$0") && [ -f SCRIPT_FILE ] || exit 1
-AUTOUPDATE=true
-QUICKSTART=false
-
-probe_permission() {
-    if [ "$(id -u)" -eq 0 ]; then
-        printf "You shouldn't run this with elevated privileges (such as with doas/sudo).\n" >&2
-        exit 1
-    elif [ -n "$(find ./ -user 0)" ]; then
-        printf 'It looks like this script was previously run with elevated privileges,
-    you will need to change ownership of the following files to your user:\n' >&2
-        find . -user 0
-        exit 1
-    fi
+download_file() { # expects URL as argument ($1)
+    readonly tf=$(mktemp)
+    $DOWNLOAD_METHOD "${tf}" "$1" >/dev/null 2>&1 && echo "$tf" || echo # return the temp-filename or empty string on error
 }
 
-probe_downloader() {
-    DOWNLOAD_METHOD=''
-    if command -v curl >/dev/null; then
-        DOWNLOAD_METHOD='curl --max-redirs 3 -so'
-    elif command -v wget2 >/dev/null; then
-        DOWNLOAD_METHOD='wget2 --max-redirect 3 -qO'
-    elif command -v wget >/dev/null; then
-        DOWNLOAD_METHOD='wget --max-redirect 3 -qO'
-    else
-        printf "No curl or wget detected.\nAutomatic self-update disabled!\n" >&2
-        AUTOUPDATE=false
-    fi
+get_script_version() {
+    echo "$(sed -n '5 s/.*[[:blank:]]\([[:digit:]]*\.[[:digit:]]*\)/\1/p' "$1")"
 }
+
+######################################
+# prefsCleaner.sh specific functions #
+######################################
 
 usage() {
     printf "\nUsage: $0 [-ds]\n"
@@ -126,26 +139,19 @@ Optional Arguments:
     -d           Don't auto-update prefsCleaner.sh\n"
 }
 
-download_file() { # expects URL as argument ($1)
-    readonly tf=$(mktemp)
-    $DOWNLOAD_METHOD "${tf}" "$1" >/dev/null 2>&1 && echo "$tf" || echo # return the temp-filename or empty string on error
+show_banner() {
+    printf "\n\n\n"
+    echo "                   ╔══════════════════════════╗"
+    echo "                   ║     prefs.js cleaner     ║"
+    echo "                   ║    by claustromaniac     ║"
+    echo "                   ║           v2.2           ║"
+    echo "                   ╚══════════════════════════╝"
+    printf "\nThis script should be run from your Firefox profile directory.\n\n"
+    echo "It will remove any entries from prefs.js that also exist in user.js."
+    echo "This will allow inactive preferences to be reset to their default values."
+    printf "\nThis Firefox profile shouldn't be in use during the process.\n\n"
 }
 
-check_firefox_running() {
-    # there are many ways to see if firefox is running or not, some more reliable than others
-    # this isn't elegant and might not be future-proof but should at least be compatible with any environment
-    while [ -e lock ]; do
-        printf "\nThis Firefox profile seems to be in use. Close Firefox and try again.\n\n" >&2
-        printf "Press any key to continue." >&2
-        read -r REPLY
-    done
-}
-
-get_script_version() {
-    echo "$(sed -n '5 s/.*[[:blank:]]\([[:digit:]]*\.[[:digit:]]*\)/\1/p' "$1")"
-}
-
-## updates the prefsCleaner.sh file based on the latest public version
 update_script() {
     readonly tmpfile="$(download_file 'https://raw.githubusercontent.com/arkenfox/user.js/master/prefsCleaner.sh')"
     [ -z "$tmpfile" ] && printf "Error! Could not download prefsCleaner.sh\n" >&2 && return 1 # check if download failed
@@ -154,15 +160,6 @@ update_script() {
     chmod u+x "$SCRIPT_FILE"
     "$SCRIPT_FILE" "$@" -d
     exit 0
-}
-
-clean() {
-    prefexp="user_pref[     ]*\([     ]*[\"']([^\"']+)[\"'][     ]*,"
-    known_prefs=$(grep -E "$prefexp" user.js | awk -F'["]' '/user_pref/{ print "\"" $2 "\"" }' | sort | uniq)
-    unneeded_prefs=$(echo "$known_prefs" | grep -E -f - "$1" | grep -E -e "^$prefexp")
-    grep -v -f - "$1" >prefs.js <<EOF
-${unneeded_prefs}
-EOF
 }
 
 start() {
@@ -187,7 +184,35 @@ start() {
     exit 0
 }
 
+check_firefox_running() {
+    # there are many ways to see if firefox is running or not, some more reliable than others
+    # this isn't elegant and might not be future-proof but should at least be compatible with any environment
+    while [ -e lock ]; do
+        printf "\nThis Firefox profile seems to be in use. Close Firefox and try again.\n\n" >&2
+        printf "Press any key to continue." >&2
+        read -r REPLY
+    done
+}
+
+clean() {
+    prefexp="user_pref[     ]*\([     ]*[\"']([^\"']+)[\"'][     ]*,"
+    known_prefs=$(grep -E "$prefexp" user.js | awk -F'["]' '/user_pref/{ print "\"" $2 "\"" }' | sort | uniq)
+    unneeded_prefs=$(echo "$known_prefs" | grep -E -f - "$1" | grep -E -e "^$prefexp")
+    grep -v -f - "$1" >prefs.js <<EOF
+${unneeded_prefs}
+EOF
+}
+
+################
+# Main program #
+################
+
+probe_permission
 probe_downloader
+probe_readlink
+SCRIPT_FILE=$(preadlink "$0") && [ -f SCRIPT_FILE ] || exit 1
+AUTOUPDATE=true
+QUICKSTART=false
 while getopts "sd" opt; do
     case $opt in
         s)
@@ -205,20 +230,6 @@ done
 cd "$(dirname "${SCRIPT_FILE}")"
 probe_permission
 [ "$AUTOUPDATE" = true ] && update_script "$@"
-
-show_banner() {
-    printf "\n\n\n"
-    echo "                   ╔══════════════════════════╗"
-    echo "                   ║     prefs.js cleaner     ║"
-    echo "                   ║    by claustromaniac     ║"
-    echo "                   ║           v2.2           ║"
-    echo "                   ╚══════════════════════════╝"
-    printf "\nThis script should be run from your Firefox profile directory.\n\n"
-    echo "It will remove any entries from prefs.js that also exist in user.js."
-    echo "This will allow inactive preferences to be reset to their default values."
-    printf "\nThis Firefox profile shouldn't be in use during the process.\n\n"
-}
-
 show_banner
 [ "$QUICKSTART" = true ] && start
 printf "\nIn order to proceed, select a command below by entering its corresponding number.\n\n"

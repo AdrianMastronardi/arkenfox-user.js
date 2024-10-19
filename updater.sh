@@ -7,6 +7,24 @@
 ## Make sure the version is of the format major.minor
 ## and within the first five lines ( because of the way the sed script is written ).
 
+###################################################
+#            Common utility functions             #
+# (shared between updater.sh and prefsCleaner.sh) #
+###################################################
+
+probe_terminal() {
+    # Colors used for printing
+    if tput setaf >/dev/null && tput sgr0 >/dev/null; then
+        RED=$(tput setaf 1)
+        BLUE=$(tput setaf 4)
+        BBLUE="$(tput bold)$(tput setaf 4)"
+        GREEN=$(tput setaf 2)
+        ORANGE=$(tput setaf 3)
+        CYAN=$(tput setaf 6)
+        NC=$(tput sgr0) # No Color
+    fi
+}
+
 probe_permission() {
     if [ "$(id -u)" -eq 0 ]; then
         printf "You shouldn't run this with elevated privileges (such as with doas/sudo).\n"
@@ -15,6 +33,20 @@ probe_permission() {
         printf 'It looks like this script was previously run with elevated privileges,
     you will need to change ownership of the following files to your user:\n'
         find . -user 0
+        exit 1
+    fi
+}
+
+probe_downloader() {
+    DOWNLOAD_METHOD=''
+    if command -v curl >/dev/null; then
+        DOWNLOAD_METHOD='curl --max-redirs 3 -so'
+    elif command -v wget2 >/dev/null; then
+        DOWNLOAD_METHOD='wget2 --max-redirect 3 -qO'
+    elif command -v wget >/dev/null; then
+        DOWNLOAD_METHOD='wget --max-redirect 3 -qO'
+    else
+        printf "${RED}This script requires curl or wget.\nProcess aborted${NC}\n" >&2
         exit 1
     fi
 }
@@ -102,89 +134,6 @@ probe_readlink() {
     fi
 }
 
-probe_readlink
-SCRIPT_FILE=$(preadlink "$0") && [ -f SCRIPT_FILE ] || exit 1
-
-probe_terminal() {
-    # Colors used for printing
-    if tput setaf >/dev/null && tput sgr0 >/dev/null; then
-        RED=$(tput setaf 1)
-        BLUE=$(tput setaf 4)
-        BBLUE="$(tput bold)$(tput setaf 4)"
-        GREEN=$(tput setaf 2)
-        ORANGE=$(tput setaf 3)
-        CYAN=$(tput setaf 6)
-        NC=$(tput sgr0) # No Color
-    fi
-}
-
-UPDATE='check'
-CONFIRM='yes'
-OVERRIDE='user-overrides.js'
-BACKUP='multiple'
-COMPARE=false
-SKIPOVERRIDE=false
-VIEW=false
-PROFILE_PATH=false
-ESR=false
-
-probe_downloader() {
-    DOWNLOAD_METHOD=''
-    if command -v curl >/dev/null; then
-        DOWNLOAD_METHOD='curl --max-redirs 3 -so'
-    elif command -v wget2 >/dev/null; then
-        DOWNLOAD_METHOD='wget2 --max-redirect 3 -qO'
-    elif command -v wget >/dev/null; then
-        DOWNLOAD_METHOD='wget --max-redirect 3 -qO'
-    else
-        printf "${RED}This script requires curl or wget.\nProcess aborted${NC}\n" >&2
-        exit 1
-    fi
-}
-
-show_banner() {
-    printf "${BBLUE}
-                ############################################################################
-                ####                                                                    ####
-                ####                          arkenfox user.js                          ####
-                ####       Hardening the Privacy and Security Settings of Firefox       ####
-                ####           Maintained by @Thorin-Oakenpants and @earthlng           ####
-                ####            Updater for macOS and Linux by @overdodactyl            ####
-                ####                                                                    ####
-                ############################################################################\n"
-    printf "${NC}\n\n"
-    printf "Documentation for this script is available here: ${CYAN}https://github.com/arkenfox/user.js/wiki/5.1-Updater-[Options]#-maclinux${NC}\n\n"
-}
-
-usage() {
-    echo
-    printf "${BLUE}Usage: $0 [-bcdehlnrsuv] [-p PROFILE] [-o OVERRIDE]${NC}\n"
-    printf "
-Optional Arguments:
-    -h           Show this help message and exit.
-    -p PROFILE   Path to your Firefox profile (if different than the dir of this script)
-                 IMPORTANT: If the path contains spaces, wrap the entire argument in quotes.
-    -l           Choose your Firefox profile from a list
-    -u           Update updater.sh and execute silently.  Do not seek confirmation.
-    -d           Do not look for updates to updater.sh.
-    -s           Silently update user.js.  Do not seek confirmation.
-    -b           Only keep one backup of each file.
-    -c           Create a diff file comparing old and new user.js within userjs_diffs.
-    -o OVERRIDE  Filename or path to overrides file (if different than user-overrides.js).
-                 If used with -p, paths should be relative to PROFILE or absolute paths
-                 If given a directory, all files inside will be appended recursively.
-                 You can pass multiple files or directories by passing a comma separated list.
-                     Note: If a directory is given, only files inside ending in the extension .js are appended
-                     IMPORTANT: Do not add spaces between files/paths.  Ex: -o file1.js,file2.js,dir1
-                     IMPORTANT: If any file/path contains spaces, wrap the entire argument in quotes.
-                         Ex: -o \"override folder\"
-    -n           Do not append any overrides, even if user-overrides.js exists.
-    -v           Open the resulting user.js file.
-    -r           Only download user.js to a temporary file and open it.
-    -e           Activate ESR related preferences.\n"
-    echo
-}
-
 download_file() { # expects URL as argument ($1)
     readonly tf=$(mktemp)
     $DOWNLOAD_METHOD "${tf}" "$1" >/dev/null 2>&1 && echo "$tf" || echo # return the temp-filename or empty string on error
@@ -197,65 +146,6 @@ open_file() { # expects one argument: file_path
         xdg-open "$1"
     else
         printf "${RED}Error: Sorry, opening files is not supported for your OS.${NC}\n"
-    fi
-}
-
-read_ini_file() { # expects one argument: absolute path of profiles.ini
-    readonly inifile="$1"
-    # tempIni will contain: [ProfileX], Name=, IsRelative= and Path= (and Default= if present) of the only (if) or the selected (else) profile
-    if [ "$(grep -c '^\[Profile' "${inifile}")" -eq "1" ]; then ### only 1 profile found
-        tempIni="$(grep '^\[Profile' -A 4 "${inifile}")"
-    else
-        printf "Profiles found:\n––––––––––––––––––––––––––––––\n"
-        ## cmd-substitution to strip trailing newlines and in quotes to keep internal ones:
-        echo "$(grep --color=never -E 'Default=[^1]|\[Profile[0-9]*\]|Name=|Path=|^$' "${inifile}")"
-        echo '––––––––––––––––––––––––––––––'
-        echo 'Select the profile number ( 0 for Profile0, 1 for Profile1, etc ) : ' >&2
-        read -r REPLY
-        printf "\n\n"
-        case "$REPLY" in
-            0 | [1-9] | [1-9][0-9]*)
-                tempIni="$(grep "^\[Profile${REPLY}" -A 4 "${inifile}")" || {
-                    printf "${RED}Profile${REPLY} does not exist!${NC}\n" && exit 1
-                }
-                ;;
-            *)
-                printf "${RED}Invalid selection!${NC}\n" && exit 1
-                ;;
-        esac
-    fi
-    # extracting 0 or 1 from the "IsRelative=" line
-    readonly pathisrel=$(
-        sed -n 's/^IsRelative=\([01]\)$/\1/p' <<EOF
-${tempIni}
-EOF
-    )
-    # extracting only the path itself, excluding "Path="
-    PROFILE_PATH=$(
-        sed -n 's/^Path=\(.*\)$/\1/p' <<EOF
-${tempIni}
-EOF
-    )
-    # update global variable if path is relative
-    [ "${pathisrel}" = "1" ] && PROFILE_PATH="$(dirname "${inifile}")/${PROFILE_PATH}"
-}
-
-get_profile_path() {
-    readonly f1=~/Library/Application\ Support/Firefox/profiles.ini
-    readonly f2=~/.mozilla/firefox/profiles.ini
-    if [ "$PROFILE_PATH" = false ]; then
-        PROFILE_PATH="$(dirname "${SCRIPT_FILE}")"
-    elif [ "$PROFILE_PATH" = 'list' ]; then
-        if [ -f "$f1" ]; then
-            read_ini_file "$f1" # updates PROFILE_PATH or exits on error
-        elif [ -f "$f2" ]; then
-            read_ini_file "$f2"
-        else
-            printf "${RED}Error: Sorry, -l is not supported for your OS${NC}\n"
-            exit 1
-        fi
-#    else
-#        : PROFILE_PATH already set by user with -p
     fi
 }
 
@@ -298,11 +188,53 @@ read1() { # arg: <variable-name>
     fi
 }
 
-# Update updater.sh
-# Default: Check for update, if available, ask user if they want to execute it
-# Args:
-#   -d: New version will not be looked for and update will not occur
-#   -u: Check for update, if available, execute without asking
+#################################
+# updater.sh specific functions #
+#################################
+
+usage() {
+    echo
+    printf "${BLUE}Usage: $0 [-bcdehlnrsuv] [-p PROFILE] [-o OVERRIDE]${NC}\n"
+    printf "
+Optional Arguments:
+    -h           Show this help message and exit.
+    -p PROFILE   Path to your Firefox profile (if different than the dir of this script)
+                 IMPORTANT: If the path contains spaces, wrap the entire argument in quotes.
+    -l           Choose your Firefox profile from a list
+    -u           Update updater.sh and execute silently.  Do not seek confirmation.
+    -d           Do not look for updates to updater.sh.
+    -s           Silently update user.js.  Do not seek confirmation.
+    -b           Only keep one backup of each file.
+    -c           Create a diff file comparing old and new user.js within userjs_diffs.
+    -o OVERRIDE  Filename or path to overrides file (if different than user-overrides.js).
+                 If used with -p, paths should be relative to PROFILE or absolute paths
+                 If given a directory, all files inside will be appended recursively.
+                 You can pass multiple files or directories by passing a comma separated list.
+                     Note: If a directory is given, only files inside ending in the extension .js are appended
+                     IMPORTANT: Do not add spaces between files/paths.  Ex: -o file1.js,file2.js,dir1
+                     IMPORTANT: If any file/path contains spaces, wrap the entire argument in quotes.
+                         Ex: -o \"override folder\"
+    -n           Do not append any overrides, even if user-overrides.js exists.
+    -v           Open the resulting user.js file.
+    -r           Only download user.js to a temporary file and open it.
+    -e           Activate ESR related preferences.\n"
+    echo
+}
+
+show_banner() {
+    printf "${BBLUE}
+                ############################################################################
+                ####                                                                    ####
+                ####                          arkenfox user.js                          ####
+                ####       Hardening the Privacy and Security Settings of Firefox       ####
+                ####           Maintained by @Thorin-Oakenpants and @earthlng           ####
+                ####            Updater for macOS and Linux by @overdodactyl            ####
+                ####                                                                    ####
+                ############################################################################\n"
+    printf "${NC}\n\n"
+    printf "Documentation for this script is available here: ${CYAN}https://github.com/arkenfox/user.js/wiki/5.1-Updater-[Options]#-maclinux${NC}\n\n"
+}
+
 update_script() {
     [ "$UPDATE" = 'no' ] && return 0 # User signified not to check for updates
     readonly tmpfile="$(download_file 'https://raw.githubusercontent.com/arkenfox/user.js/master/updater.sh')"
@@ -326,32 +258,63 @@ update_script() {
     exit 0
 }
 
-# Returns version number of a user.js file
-get_userjs_version() {
-    [ -e "$1" ] && echo "$(sed -n '4p' "$1")" || echo "Not detected."
-}
-
-add_override() {
-    input=$1
-    if [ -f "$input" ]; then
-        echo "" >>user.js
-        cat "$input" >>user.js
-        printf "Status: ${GREEN}Override file appended:${NC} ${input}\n"
-    elif [ -d "$input" ]; then
-        SAVEIFS=$IFS
-        IFS=$(printf '\n\b')
-        FILES="${input}"/*.js
-        for f in $FILES; do
-            add_override "$f"
-        done
-        IFS=$SAVEIFS # restore $IFS
-    else
-        printf "${ORANGE}Warning: Could not find override file:${NC} ${input}\n"
+get_profile_path() {
+    readonly f1=~/Library/Application\ Support/Firefox/profiles.ini
+    readonly f2=~/.mozilla/firefox/profiles.ini
+    if [ "$PROFILE_PATH" = false ]; then
+        PROFILE_PATH="$(dirname "${SCRIPT_FILE}")"
+    elif [ "$PROFILE_PATH" = 'list' ]; then
+        if [ -f "$f1" ]; then
+            read_ini_file "$f1" # updates PROFILE_PATH or exits on error
+        elif [ -f "$f2" ]; then
+            read_ini_file "$f2"
+        else
+            printf "${RED}Error: Sorry, -l is not supported for your OS${NC}\n"
+            exit 1
+        fi
+#    else
+#        : PROFILE_PATH already set by user with -p
     fi
 }
 
-remove_comments() { # expects 2 arguments: from-file and to-file
-    sed -e '/^\/\*.*\*\/[[:space:]]*$/d' -e '/^\/\*/,/\*\//d' -e 's|^[[:space:]]*//.*$||' -e '/^[[:space:]]*$/d' -e 's|);[[:space:]]*//.*|);|' "$1" >"$2"
+read_ini_file() { # expects one argument: absolute path of profiles.ini
+    readonly inifile="$1"
+    # tempIni will contain: [ProfileX], Name=, IsRelative= and Path= (and Default= if present) of the only (if) or the selected (else) profile
+    if [ "$(grep -c '^\[Profile' "${inifile}")" -eq "1" ]; then ### only 1 profile found
+        tempIni="$(grep '^\[Profile' -A 4 "${inifile}")"
+    else
+        printf "Profiles found:\n––––––––––––––––––––––––––––––\n"
+        ## cmd-substitution to strip trailing newlines and in quotes to keep internal ones:
+        echo "$(grep --color=never -E 'Default=[^1]|\[Profile[0-9]*\]|Name=|Path=|^$' "${inifile}")"
+        echo '––––––––––––––––––––––––––––––'
+        echo 'Select the profile number ( 0 for Profile0, 1 for Profile1, etc ) : ' >&2
+        read -r REPLY
+        printf "\n\n"
+        case "$REPLY" in
+            0 | [1-9] | [1-9][0-9]*)
+                tempIni="$(grep "^\[Profile${REPLY}" -A 4 "${inifile}")" || {
+                    printf "${RED}Profile${REPLY} does not exist!${NC}\n" && exit 1
+                }
+                ;;
+            *)
+                printf "${RED}Invalid selection!${NC}\n" && exit 1
+                ;;
+        esac
+    fi
+    # extracting 0 or 1 from the "IsRelative=" line
+    readonly pathisrel=$(
+        sed -n 's/^IsRelative=\([01]\)$/\1/p' <<EOF
+${tempIni}
+EOF
+    )
+    # extracting only the path itself, excluding "Path="
+    PROFILE_PATH=$(
+        sed -n 's/^Path=\(.*\)$/\1/p' <<EOF
+${tempIni}
+EOF
+    )
+    # update global variable if path is relative
+    [ "${pathisrel}" = "1" ] && PROFILE_PATH="$(dirname "${inifile}")/${PROFILE_PATH}"
 }
 
 # Applies latest version of user.js and any custom overrides
@@ -417,9 +380,52 @@ update_userjs() {
     [ "$VIEW" = true ] && open_file "${PWD}/user.js"
 }
 
-probe_permission
+# Returns version number of a user.js file
+get_userjs_version() {
+    [ -e "$1" ] && echo "$(sed -n '4p' "$1")" || echo "Not detected."
+}
+
+add_override() {
+    input=$1
+    if [ -f "$input" ]; then
+        echo "" >>user.js
+        cat "$input" >>user.js
+        printf "Status: ${GREEN}Override file appended:${NC} ${input}\n"
+    elif [ -d "$input" ]; then
+        SAVEIFS=$IFS
+        IFS=$(printf '\n\b')
+        FILES="${input}"/*.js
+        for f in $FILES; do
+            add_override "$f"
+        done
+        IFS=$SAVEIFS # restore $IFS
+    else
+        printf "${ORANGE}Warning: Could not find override file:${NC} ${input}\n"
+    fi
+}
+
+remove_comments() { # expects 2 arguments: from-file and to-file
+    sed -e '/^\/\*.*\*\/[[:space:]]*$/d' -e '/^\/\*/,/\*\//d' -e 's|^[[:space:]]*//.*$||' -e '/^[[:space:]]*$/d' -e 's|);[[:space:]]*//.*|);|' "$1" >"$2"
+}
+
+################
+# Main program #
+################
+
 probe_terminal
+probe_permission
 probe_downloader
+probe_readlink
+SCRIPT_FILE=$(preadlink "$0") && [ -f SCRIPT_FILE ] || exit 1
+UPDATE='check'
+CONFIRM='yes'
+OVERRIDE='user-overrides.js'
+BACKUP='multiple'
+COMPARE=false
+SKIPOVERRIDE=false
+VIEW=false
+PROFILE_PATH=false
+ESR=false
 if [ $# != 0 ]; then
     # Display usage if first argument is -help or --help
     if [ "$1" = '--help' ] || [ "$1" = '-help' ]; then
